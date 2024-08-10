@@ -1,14 +1,20 @@
 ﻿using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using POS.API.Helpers;
 using POS.Data.Dto;
+using POS.Data.Dto.Shifts;
+using POS.Data.Entities.Shifts;
 using POS.Data.Resources;
+using POS.Domain;
 using POS.MediatR.CommandAndQuery;
 using POS.MediatR.Commands;
 using POS.MediatR.SalesOrder.Commands;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace POS.API.Controllers.SalesOrder
@@ -19,15 +25,227 @@ namespace POS.API.Controllers.SalesOrder
     public class SalesOrderController : BaseController
     {
         public IMediator _mediator { get; set; }
+        private POSDbContext _context { get; set; }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="SalesOrderController"/> class.
         /// </summary>
         /// <param name="mediator">The mediator.</param>
-        public SalesOrderController(IMediator mediator)
+        public SalesOrderController(IMediator mediator, POSDbContext context)
         {
             _mediator = mediator;
+            _context = context;
         }
+
+        #region new business
+        // Search - Next - Previous Order Number
+        [HttpGet("previous/{orderNumber}")]
+        public async Task<IActionResult> GetPreviousSalesOrder(string orderNumber)
+        {
+            Data.SalesOrder previousSalesOrder;
+
+            if (orderNumber == "undefined")
+            {
+                previousSalesOrder = await _context.SalesOrders
+                    .Include(so => so.SalesOrderItems)
+                        .ThenInclude(soi => soi.Product) // Include the related Product entity
+                    .OrderByDescending(so => so.SOCreatedDate)
+                    .FirstOrDefaultAsync();
+            }
+            else
+            {
+                var numericPart = GetNumericPart(orderNumber);
+                var allSalesOrders = await _context.SalesOrders
+                    .Include(so => so.SalesOrderItems)
+                        .ThenInclude(soi => soi.Product) // Include the related Product entity
+                    .ToListAsync();
+
+                previousSalesOrder = allSalesOrders
+                    .Where(so => GetNumericPart(so.OrderNumber) < numericPart)
+                    .OrderByDescending(so => GetNumericPart(so.OrderNumber))
+                    .FirstOrDefault();
+            }
+
+            if (previousSalesOrder == null)
+            {
+                return NoContent();
+            }
+
+            previousSalesOrder.SalesOrderItems = previousSalesOrder.SalesOrderItems
+                .Where(soi => soi.Status == 0)
+                .ToList();
+
+            return Ok(previousSalesOrder);
+        }
+
+
+        [HttpGet("next/{orderNumber}")]
+        public async Task<IActionResult> GetNextSalesOrder(string orderNumber)
+        {
+            Data.SalesOrder nextSalesOrder;
+
+            var numericPart = GetNumericPart(orderNumber);
+            var allSalesOrders = await _context.SalesOrders
+                .Include(so => so.SalesOrderItems)
+                    .ThenInclude(soi => soi.Product) // Include the related Product entity
+                .ToListAsync();
+
+            nextSalesOrder = allSalesOrders
+                .Where(so => GetNumericPart(so.OrderNumber) > numericPart)
+                .OrderBy(so => GetNumericPart(so.OrderNumber))
+                .FirstOrDefault();
+
+            if (nextSalesOrder == null)
+            {
+                return NoContent();
+            }
+
+            nextSalesOrder.SalesOrderItems = nextSalesOrder.SalesOrderItems
+                .Where(soi => soi.Status == 0)
+                .ToList();
+
+            return Ok(nextSalesOrder);
+        }
+
+
+        private int GetNumericPart(string orderNumber)
+        {
+            return int.Parse(orderNumber.Substring(3));
+        }
+
+        [HttpGet("byOrderNumber/{orderNumber}")]
+        public async Task<IActionResult> GetSalesOrderByOrderNumber(string orderNumber)
+        {
+            var salesOrder = await _context.SalesOrders
+                .Include(so => so.SalesOrderItems)
+                    .ThenInclude(soi => soi.Product) // Include the related Product entity
+                .FirstOrDefaultAsync(so => so.OrderNumber.Equals(orderNumber));
+
+            if (salesOrder == null)
+            {
+                return NotFound();
+            }
+
+            // Filter the SalesOrderItems to include only those with status 0
+            salesOrder.SalesOrderItems = salesOrder.SalesOrderItems
+                .Where(soi => soi.Status == 0)
+                .ToList();
+
+            return Ok(salesOrder);
+        }
+
+        [HttpPost("GetTaxIdsForProducts")]
+        public async Task<IActionResult> GetTaxIdsForProducts([FromBody] dynamic request)
+        {
+            List<Guid> productIds = request.productIds.ToObject<List<Guid>>();
+            Guid id = request.id;
+
+            var salesOrderItems = await _context.SalesOrderItems
+                .Where(s => s.SalesOrderId == id && productIds.Contains(s.ProductId))
+                .ToListAsync();
+
+            var salesOrderItemIds = salesOrderItems.Select(it => it.Id).ToList();
+
+            var salesOrderItemTaxes = await _context.SalesOrderItemTaxes
+                .Where(t => salesOrderItemIds.Contains(t.SalesOrderItemId))
+                .Select(t => new
+                {
+                    t.Id,
+                    t.SalesOrderItemId,
+                    t.TaxId,
+                    TaxName = t.Tax.Name,
+                    TaxPercentage = t.Tax.Percentage
+                })
+                .ToListAsync();
+
+            return Ok(salesOrderItemTaxes);
+        }
+
+        //Shifts
+        // Endpoint to start a shift
+        [Authorize]
+        [HttpPost("StartShift")]
+        public async Task<IActionResult> StartShift()
+        {
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (userIdString == null)
+            {
+                return Unauthorized("User ID not found in claims");
+            }
+
+            if (!Guid.TryParse(userIdString, out var userId))
+            {
+                return BadRequest("Invalid User ID format");
+            }
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                return NotFound("User not found");
+            }
+
+            // Check if there is an ongoing shift for the user
+            var ongoingShift = await _context.Shifts
+                .Where(s => s.UserId == userId && !s.EndShift.HasValue)
+                .FirstOrDefaultAsync();
+
+            if (ongoingShift != null)
+            {
+                return BadRequest("Cannot start a new shift. An ongoing shift exists.");
+            }
+
+            // Create a new shift
+            var shift = new Shifts
+            {
+                ShiftName = user.UserName + " Shift",
+                StartShift = DateTime.UtcNow,
+                UserId = userId
+            };
+
+            _context.Shifts.Add(shift);
+            await _context.SaveChangesAsync();
+
+            return Ok(shift);
+        }
+
+        // Endpoint to end a shift
+        [Authorize]
+        [HttpPost("EndShift")]
+        public async Task<IActionResult> EndShift()
+        {
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (userIdString == null)
+            {
+                return Unauthorized("User ID not found in claims");
+            }
+
+            if (!Guid.TryParse(userIdString, out var userId))
+            {
+                return BadRequest("Invalid User ID format");
+            }
+
+            var shift = await _context.Shifts
+                .Where(s => s.UserId == userId && !s.EndShift.HasValue)
+                .OrderByDescending(s => s.StartShift)
+                .FirstOrDefaultAsync();
+
+            if (shift == null)
+            {
+                return NotFound("No ongoing shift found for the user");
+            }
+
+            shift.EndShift = DateTime.UtcNow;
+            shift.ShiftDuration = shift.EndShift.Value - shift.StartShift;
+
+            _context.Shifts.Update(shift);
+            await _context.SaveChangesAsync();
+
+            return Ok(shift);
+        }
+
+        #endregion
 
         /// <summary>
         /// Gets all sales order.

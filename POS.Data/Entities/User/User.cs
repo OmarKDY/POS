@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Identity;
+using POS.Data.Entities.Shifts;
 using System;
 using System.Collections.Generic;
 
@@ -24,5 +25,6 @@ namespace POS.Data
         public virtual ICollection<UserLogin> UserLogins { get; set; }
         public virtual ICollection<UserToken> UserTokens { get; set; }
         public virtual ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
+        public virtual ICollection<Shifts> Shifts { get; set; }
     }
 }

@@ -9,6 +9,8 @@ using Microsoft.AspNetCore.Mvc;
 using POS.Data.Resources;
 using POS.Repository;
 using POS.API.Helpers;
+using System.Security.Claims;
+using POS.Domain;
 
 namespace POS.API.Controllers
 {
@@ -22,6 +24,8 @@ namespace POS.API.Controllers
     {
         public IMediator _mediator { get; set; }
         public readonly UserInfoToken _userInfo;
+        private POSDbContext _context { get; set; }
+
         /// <summary>
         /// User
         /// </summary>
@@ -29,12 +33,41 @@ namespace POS.API.Controllers
         /// <param name="userInfo"></param>
         public UserController(
             IMediator mediator,
-            UserInfoToken userInfo
+            UserInfoToken userInfo, POSDbContext context
             )
         {
             _mediator = mediator;
             _userInfo = userInfo;
+            _context = context;
         }
+
+        #region new business
+        [Authorize]
+        [HttpGet("GetCurrentUser")]
+        public async Task<IActionResult> GetCurrentUser()
+        {
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+            if (userIdString == null)
+            {
+                return Unauthorized("User ID not found in claims");
+            }
+
+            if (!Guid.TryParse(userIdString, out var userId))
+            {
+                return BadRequest("Invalid User ID format");
+            }
+
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null)
+            {
+                return NotFound("User not found");
+            }
+
+            return Ok(user);
+        }
+
+        #endregion
         /// <summary>
         ///  Create a User
         /// </summary>

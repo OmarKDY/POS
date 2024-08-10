@@ -3,6 +3,7 @@ using POS.Data.Entities;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using System;
+using POS.Data.Entities.Shifts;
 
 namespace POS.Domain
 {
@@ -69,6 +70,7 @@ namespace POS.Domain
         public DbSet<SalesOrderPayment> SalesOrderPayments { get; set; }
         public DbSet<UnitConversation> UnitConversations { get; set; }
         public DbSet<WarehouseInventory> WarehouseInventories { get; set; }
+        public DbSet<Shifts> Shifts { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -457,6 +459,17 @@ namespace POS.Domain
                     .OnDelete(DeleteBehavior.Restrict)
                     .IsRequired();
             });
+
+            builder.Entity<User>(b =>
+            {
+                // Each User can have many Shifts
+                b.HasMany(s => s.Shifts)
+                    .WithOne(u => u.User)
+                    .HasForeignKey(us => us.UserId)
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+            });
+
 
             builder.Entity<User>().ToTable("Users");
             builder.Entity<Role>().ToTable("Roles");
